@@ -1,0 +1,96 @@
+name: Windows exe
+
+# Builds a ready-to-run Windows copy of Gecko and saves it as a downloadable zip
+# ("gecko-windows") on the run's summary page.
+# Run it by hand: Actions tab -> "Windows exe" -> "Run workflow".
+#
+# The build steps mirror the Windows job in ci.yml (same Qt, SFML and CMake versions),
+# minus the tests, plus a packaging step that gathers the exe, its DLLs, the Qt plugins
+# and the resources folder into one folder.
+on:
+  workflow_dispatch:
+
+env:
+  CMAKE_VERSION: 3.31.4
+  QT_VERSION: 6.9.3
+  SFML_VERSION: 3.0.1
+
+jobs:
+  windows-exe:
+    name: Build Windows exe
+    runs-on: windows-latest
+    timeout-minutes: 150
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install CMake
+      uses: lukka/get-cmake@latest
+      with:
+        cmakeVersion: ${{ env.CMAKE_VERSION }}
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        aqtversion: '==3.3.0'
+        version: ${{ env.QT_VERSION }}
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_msvc2022_64'
+        cache: true
+
+    # Puts the MSVC compiler (cl.exe) on PATH for the Ninja build below.
+    - name: Setup MSVC environment
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      with:
+        arch: x64
+
+    - name: Build and install SFML 3
+      shell: cmd
+      run: |
+        git clone --depth 1 --branch ${{ env.SFML_VERSION }} https://github.com/SFML/SFML.git
+        cd SFML
+        cmake -B build -DCMAKE_BUILD_TYPE=Release ^
+          -DBUILD_SHARED_LIBS=ON ^
+          -DSFML_BUILD_AUDIO=OFF ^
+          -DSFML_BUILD_NETWORK=OFF ^
+          -DCMAKE_INSTALL_PREFIX=${{ runner.temp }}/sfml-install
+        cmake --build build --config Release
+        cmake --install build --config Release
+        cd ..
+
+    - name: Configure CMake
+      shell: cmd
+      run: |
+        cmake -B build -G Ninja ^
+          -DCMAKE_BUILD_TYPE=Release ^
+          -DGECK_BUILD_TESTS=OFF ^
+          -DGECK_USE_SYSTEM_LIBS=ON ^
+          -DGECK_ENABLE_SCRIPTING=ON ^
+          -DQt6_DIR=%Qt6_DIR% ^
+          -DCMAKE_PREFIX_PATH=${{ runner.temp }}/sfml-install
+
+    - name: Build
+      run: cmake --build build --config Release --parallel
+
+    # Gathers everything gecko.exe needs to run on a PC without Qt or SFML installed.
+    - name: Package
+      shell: cmd
+      run: |
+        mkdir dist
+        copy build\gecko.exe dist\
+        copy build\*.dll dist\
+        copy "${{ runner.temp }}\sfml-install\bin\*.dll" dist\
+        xcopy build\resources dist\resources\ /E /I /Y
+        "%QT_ROOT_DIR%\bin\windeployqt.exe" --release --compiler-runtime dist\gecko.exe
+        echo Put master.dat and critter.dat from your Fallout 2 folder into the resources folder, then run gecko.exe.> dist\READ_ME_FIRST.txt
+        dir dist
+
+    - name: Upload zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: gecko-windows
+        path: dist
